@@ -1,0 +1,1005 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <omp.h>
+
+#include <opencv2/opencv.hpp>
+#include <turbojpeg.h>
+
+using namespace std;
+namespace fs = std::filesystem;
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+// JPEG compression quality
+const int JPEG_QUALITY = 75;
+
+// Number of images to select from each class
+// Full experiments use 50, 100, 250 and 500 images per class.
+// A command-line value of 2 runs a small correctness test using exactly
+// 2 images total.
+const vector<int> IMAGE_COUNTS = {50, 100, 250, 500};
+
+// The 8 class folders in the Natural Images dataset
+const vector<string> CLASS_NAMES =
+{
+    "airplane",
+    "car",
+    "cat",
+    "dog",
+    "flower",
+    "fruit",
+    "motorbike",
+    "person"
+};
+
+// ============================================================
+// STRUCTURE TO STORE RESULTS FOR ONE IMAGE
+// ============================================================
+
+struct ImageResult
+{
+    string className;
+    string imageName;
+
+    long long originalSize;
+    long long compressedSize;
+
+    double compressionRatio;
+    double spaceSaving;
+
+    double compressionTime;
+    double decompressionTime;
+    double totalTime;
+
+    double mse;
+    double psnr;
+    double ssim;
+};
+
+
+// ============================================================
+// FUNCTION: Calculate MSE
+// ============================================================
+
+double calculateMSE(const cv::Mat& original, const cv::Mat& reconstructed)
+{
+    // Make sure both images have the same size
+    if (original.size() != reconstructed.size())
+    {
+        return -1.0;
+    }
+
+    // Convert images to floating point
+    cv::Mat originalFloat;
+    cv::Mat reconstructedFloat;
+
+    original.convertTo(originalFloat, CV_32F);
+    reconstructed.convertTo(reconstructedFloat, CV_32F);
+
+    // Difference between original and reconstructed image
+    cv::Mat difference = originalFloat - reconstructedFloat;
+
+    // Square the difference
+    cv::Mat squaredDifference;
+    cv::multiply(difference, difference, squaredDifference);
+
+    // Calculate mean squared error
+    cv::Scalar sum = cv::sum(squaredDifference);
+
+    double totalPixels =
+        static_cast<double>(
+            original.total() * original.channels()
+        );
+
+    double mse = (sum[0] + sum[1] + sum[2]) / totalPixels;
+
+    return mse;
+}
+
+
+// ============================================================
+// FUNCTION: Calculate PSNR
+// ============================================================
+
+double calculatePSNR(double mse)
+{
+    // If MSE is zero, images are identical
+    if (mse == 0.0)
+    {
+        return INFINITY;
+    }
+
+    // Maximum pixel value for an 8-bit image
+    const double MAX_PIXEL = 255.0;
+
+    double psnr =
+        10.0 * log10(
+            (MAX_PIXEL * MAX_PIXEL) / mse
+        );
+
+    return psnr;
+}
+
+
+// ============================================================
+// FUNCTION: Calculate SSIM
+//
+// This is a simple global SSIM calculation.
+// It calculates SSIM using luminance, contrast and structure.
+// ============================================================
+
+double calculateSSIM(const cv::Mat& original, const cv::Mat& reconstructed)
+{
+    if (original.empty() || reconstructed.empty())
+    {
+        return -1.0;
+    }
+
+    if (original.size() != reconstructed.size())
+    {
+        return -1.0;
+    }
+
+    // Convert BGR images to grayscale
+    cv::Mat originalGray;
+    cv::Mat reconstructedGray;
+
+    cv::cvtColor(original, originalGray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(reconstructed, reconstructedGray, cv::COLOR_BGR2GRAY);
+
+    // Convert to double for calculations
+    cv::Mat originalDouble;
+    cv::Mat reconstructedDouble;
+
+    originalGray.convertTo(originalDouble, CV_64F);
+    reconstructedGray.convertTo(reconstructedDouble, CV_64F);
+
+    // Calculate means
+    cv::Scalar meanOriginal;
+    cv::Scalar meanReconstructed;
+
+    cv::meanStdDev(
+        originalDouble,
+        meanOriginal,
+        cv::noArray()
+    );
+
+    cv::meanStdDev(
+        reconstructedDouble,
+        meanReconstructed,
+        cv::noArray()
+    );
+
+    double muX = meanOriginal[0];
+    double muY = meanReconstructed[0];
+
+    // Calculate variance and covariance
+
+    cv::Mat diffOriginal = originalDouble - muX;
+    cv::Mat diffReconstructed = reconstructedDouble - muY;
+
+    double varianceOriginal =
+        cv::sum(diffOriginal.mul(diffOriginal))[0]
+        / (originalDouble.total() - 1);
+
+    double varianceReconstructed =
+        cv::sum(diffReconstructed.mul(diffReconstructed))[0]
+        / (reconstructedDouble.total() - 1);
+
+    double covariance =
+        cv::sum(
+            diffOriginal.mul(diffReconstructed)
+        )[0]
+        / (originalDouble.total() - 1);
+
+    // SSIM constants
+    const double L = 255.0;
+
+    const double C1 =
+        (0.01 * L) * (0.01 * L);
+
+    const double C2 =
+        (0.03 * L) * (0.03 * L);
+
+    // SSIM formula
+    double numerator =
+        (2.0 * muX * muY + C1)
+        *
+        (2.0 * covariance + C2);
+
+    double denominator =
+        (muX * muX + muY * muY + C1)
+        *
+        (varianceOriginal + varianceReconstructed + C2);
+
+    double ssim = numerator / denominator;
+
+    return ssim;
+}
+
+
+// ============================================================
+// FUNCTION: JPEG COMPRESS USING LIBJPEG-TURBO
+//
+// Input:
+//      OpenCV BGR image
+//
+// Output:
+//      Vector containing compressed JPEG bytes
+// ============================================================
+
+bool compressJPEG(
+    const cv::Mat& image,
+    vector<unsigned char>& compressedData,
+    int quality)
+{
+    // Create TurboJPEG compressor
+    tjhandle compressor = tjInitCompress();
+
+    if (compressor == nullptr)
+    {
+        cerr << "ERROR: Could not initialize TurboJPEG compressor.\n";
+        return false;
+    }
+
+    unsigned char* jpegBuffer = nullptr;
+    unsigned long jpegSize = 0;
+
+    // OpenCV stores color images as BGR.
+    // TurboJPEG expects RGB when using TJPF_RGB.
+    //
+    // Therefore, convert BGR -> RGB.
+    cv::Mat rgbImage;
+    cv::cvtColor(image, rgbImage, cv::COLOR_BGR2RGB);
+
+    int width = rgbImage.cols;
+    int height = rgbImage.rows;
+
+    int pixelFormat = TJPF_RGB;
+
+    int pitch = width * 3;
+
+    int result = tjCompress2(
+        compressor,
+        rgbImage.data,
+        width,
+        pitch,
+        height,
+        pixelFormat,
+        &jpegBuffer,
+        &jpegSize,
+        TJSAMP_444,
+        quality,
+        TJFLAG_FASTDCT
+    );
+
+    if (result != 0)
+    {
+        cerr << "ERROR: JPEG compression failed: "
+             << tjGetErrorStr()
+             << "\n";
+
+        tjDestroy(compressor);
+        return false;
+    }
+
+    // Copy compressed data into our vector
+    compressedData.assign(
+        jpegBuffer,
+        jpegBuffer + jpegSize
+    );
+
+    // Free memory allocated by TurboJPEG
+    tjFree(jpegBuffer);
+
+    // Destroy compressor
+    tjDestroy(compressor);
+
+    return true;
+}
+
+
+// ============================================================
+// FUNCTION: JPEG DECOMPRESS USING LIBJPEG-TURBO
+//
+// Input:
+//      JPEG compressed bytes
+//
+// Output:
+//      Reconstructed OpenCV BGR image
+// ============================================================
+
+bool decompressJPEG(
+    const vector<unsigned char>& compressedData,
+    cv::Mat& reconstructed)
+{
+    // Create TurboJPEG decompressor
+    tjhandle decompressor = tjInitDecompress();
+
+    if (decompressor == nullptr)
+    {
+        cerr << "ERROR: Could not initialize TurboJPEG decompressor.\n";
+        return false;
+    }
+
+    int width;
+    int height;
+    int subsampling;
+    int colorspace;
+
+    // Read JPEG header
+    int result = tjDecompressHeader3(
+        decompressor,
+        compressedData.data(),
+        compressedData.size(),
+        &width,
+        &height,
+        &subsampling,
+        &colorspace
+    );
+
+    if (result != 0)
+    {
+        cerr << "ERROR: Could not read JPEG header: "
+             << tjGetErrorStr()
+             << "\n";
+
+        tjDestroy(decompressor);
+        return false;
+    }
+
+    // Create RGB image
+    cv::Mat rgbImage(
+        height,
+        width,
+        CV_8UC3
+    );
+
+    // Decompress JPEG into RGB image
+    result = tjDecompress2(
+        decompressor,
+        compressedData.data(),
+        compressedData.size(),
+        rgbImage.data,
+        width,
+        width * 3,
+        height,
+        TJPF_RGB,
+        TJFLAG_FASTDCT
+    );
+
+    if (result != 0)
+    {
+        cerr << "ERROR: JPEG decompression failed: "
+             << tjGetErrorStr()
+             << "\n";
+
+        tjDestroy(decompressor);
+        return false;
+    }
+
+    // Convert RGB back to OpenCV BGR
+    cv::cvtColor(
+        rgbImage,
+        reconstructed,
+        cv::COLOR_RGB2BGR
+    );
+
+    // Destroy decompressor
+    tjDestroy(decompressor);
+
+    return true;
+}
+
+
+// ============================================================
+// FUNCTION: Get all JPG/JPEG files from a folder
+//
+// Files are sorted alphabetically.
+// ============================================================
+
+vector<fs::path> getImageFiles(const fs::path& folder)
+{
+    vector<fs::path> files;
+
+    if (!fs::exists(folder))
+    {
+        cerr << "ERROR: Folder does not exist: "
+             << folder << "\n";
+
+        return files;
+    }
+
+    // Read all files
+    for (const auto& entry : fs::directory_iterator(folder))
+    {
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+
+        string extension =
+            entry.path().extension().string();
+
+        // Convert extension to lowercase
+        transform(
+            extension.begin(),
+            extension.end(),
+            extension.begin(),
+            ::tolower
+        );
+
+        if (extension == ".jpg" ||
+            extension == ".jpeg")
+        {
+            files.push_back(entry.path());
+        }
+    }
+
+    // Sort alphabetically
+    sort(
+        files.begin(),
+        files.end()
+    );
+
+    return files;
+}
+
+
+// ============================================================
+// FUNCTION: Write CSV Header
+// ============================================================
+
+void writeCSVHeader(ofstream& csv)
+{
+    csv << "Class,"
+        << "Image,"
+        << "Original_Size_Bytes,"
+        << "Compressed_Size_Bytes,"
+        << "Compression_Ratio,"
+        << "Space_Saving_Percent,"
+        << "Compression_Time_ms,"
+        << "Decompression_Time_ms,"
+        << "Total_Time_ms,"
+        << "MSE,"
+        << "PSNR_dB,"
+        << "SSIM\n";
+}
+
+
+// ============================================================
+// FUNCTION: Write one image's results to CSV
+// ============================================================
+
+void writeImageResult(
+    ofstream& csv,
+    const ImageResult& result)
+{
+    csv << result.className << ","
+        << result.imageName << ","
+        << result.originalSize << ","
+        << result.compressedSize << ","
+        << result.compressionRatio << ","
+        << result.spaceSaving << ","
+        << result.compressionTime << ","
+        << result.decompressionTime << ","
+        << result.totalTime << ","
+        << result.mse << ","
+        << result.psnr << ","
+        << result.ssim << "\n";
+}
+
+
+fs::path resolveProjectRoot()
+{
+    fs::path currentDir = fs::current_path();
+
+    // First check the current working directory.
+    if (fs::exists(currentDir / "natural_images"))
+    {
+        return currentDir;
+    }
+
+    // Then check the directory where the executable is located.
+    fs::path executableDir =
+        fs::absolute(fs::path(__FILE__)).parent_path();
+
+    if (fs::exists(executableDir / "natural_images"))
+    {
+        return executableDir;
+    }
+
+    // Check the parent directory of src/
+    fs::path projectRoot =
+        executableDir.parent_path();
+
+    if (fs::exists(projectRoot / "natural_images"))
+    {
+        return projectRoot;
+    }
+
+    // If not found, return current directory.
+    return currentDir;
+}
+
+
+
+// ============================================================
+// MAIN FUNCTION - OPENMP PARALLEL VERSION
+// ============================================================
+
+int main(int argc, char* argv[])
+{
+    fs::path projectRoot = resolveProjectRoot();
+    fs::path datasetPath = projectRoot / "natural_images";
+
+    fs::path outputPath = projectRoot / "output";
+    fs::path compressedPath = outputPath / "parallel_compressed";
+    fs::path reconstructedPath = outputPath / "parallel_reconstructed";
+    fs::path resultsPath = projectRoot / "results";
+
+    fs::create_directories(compressedPath);
+    fs::create_directories(reconstructedPath);
+    fs::create_directories(resultsPath);
+
+    if (!fs::exists(datasetPath))
+    {
+        cerr << "ERROR: Dataset folder not found: "
+             << datasetPath << "\n";
+        return 1;
+    }
+
+    // Usage:
+    // parallel.exe <images_per_class> <threads>
+    //
+    // Examples:
+    // parallel.exe 50 1
+    // parallel.exe 50 2
+    // parallel.exe 50 4
+    // parallel.exe 50 8
+
+    if (argc != 3)
+    {
+        cerr << "Usage: parallel.exe <image_count> <threads>\n";
+        cerr << "Image count: 2, 50, 100, 250 or 500\n";
+        cerr << "Threads: 1, 2, 4 or 8\n";
+        return 1;
+    }
+
+    int imagesPerClass;
+    int numThreads;
+
+    try
+    {
+        imagesPerClass = stoi(argv[1]);
+        numThreads = stoi(argv[2]);
+    }
+    catch (...)
+    {
+        cerr << "ERROR: Invalid command-line arguments.\n";
+        return 1;
+    }
+
+    if (imagesPerClass != 2 &&
+        imagesPerClass != 50 &&
+        imagesPerClass != 100 &&
+        imagesPerClass != 250 &&
+        imagesPerClass != 500)
+    {
+        cerr << "ERROR: Image count must be 2, 50, 100, 250 or 500.\n";
+        return 1;
+    }
+
+    if (numThreads != 1 &&
+        numThreads != 2 &&
+        numThreads != 4 &&
+        numThreads != 8)
+    {
+        cerr << "ERROR: Threads must be 1, 2, 4 or 8.\n";
+        return 1;
+    }
+
+    omp_set_num_threads(numThreads);
+
+    cout << "\n============================================\n";
+    cout << " OpenMP Parallel Image Compression\n";
+    cout << "============================================\n";
+    cout << "Images per class: " << imagesPerClass << "\n";
+    cout << "Threads: " << numThreads << "\n";
+    cout << "JPEG Quality: " << JPEG_QUALITY << "\n";
+
+    string csvFileName =
+        "parallel_" +
+        to_string(imagesPerClass) +
+        "_t" +
+        to_string(numThreads) +
+        "_per_class.csv";
+
+    fs::path csvPath = resultsPath / csvFileName;
+
+    ofstream csv(csvPath);
+
+    if (!csv.is_open())
+    {
+        cerr << "ERROR: Could not create CSV file.\n";
+        return 1;
+    }
+
+    // Extra benchmarking information is kept in the CSV.
+    csv << "Class,Image,Original_Size_Bytes,Compressed_Size_Bytes,"
+        << "Compression_Ratio,Space_Saving_Percent,"
+        << "Compression_Time_ms,Decompression_Time_ms,Total_Time_ms,"
+        << "MSE,PSNR_dB,SSIM\n";
+
+    long long totalOriginalSize = 0;
+    long long totalCompressedSize = 0;
+
+    double totalCompressionTime = 0.0;
+    double totalDecompressionTime = 0.0;
+    double totalProcessingTime = 0.0;
+
+    double totalMSE = 0.0;
+    double totalPSNR = 0.0;
+    double totalSSIM = 0.0;
+
+    int successfulImages = 0;
+
+    auto experimentStart = chrono::high_resolution_clock::now();
+
+    for (const string& className : CLASS_NAMES)
+    {
+        // Person 1's "2" correctness test means exactly 2 total
+        // images, both from the first class.
+        if (imagesPerClass == 2 &&
+            className != CLASS_NAMES.front())
+        {
+            break;
+        }
+
+        fs::path classPath = datasetPath / className;
+
+        vector<fs::path> imageFiles = getImageFiles(classPath);
+
+        if (imageFiles.size() < static_cast<size_t>(imagesPerClass))
+        {
+            cerr << "WARNING: " << className
+                 << " contains only " << imageFiles.size()
+                 << " images.\n";
+            continue;
+        }
+
+        // For normal experiments, process the first N images.
+        // The same deterministic selection as Person 1 is used.
+        int imagesToProcess = imagesPerClass;
+
+        // Create all directories before starting parallel work.
+        // This avoids unnecessary shared filesystem operations.
+        fs::path compressedClassPath =
+            compressedPath /
+            to_string(imagesPerClass) /
+            ("t" + to_string(numThreads)) /
+            className;
+
+        fs::path reconstructedClassPath =
+            reconstructedPath /
+            to_string(imagesPerClass) /
+            ("t" + to_string(numThreads)) /
+            className;
+
+        fs::create_directories(compressedClassPath);
+        fs::create_directories(reconstructedClassPath);
+
+        // One result slot per image.
+        // Each OpenMP iteration writes only to its own index.
+        vector<ImageResult> results(imagesToProcess);
+        vector<int> success(imagesToProcess, 0);
+
+        auto classStart = chrono::high_resolution_clock::now();
+
+        // ========================================================
+        // MAIN OPENMP PARALLEL LOOP
+        // ========================================================
+        #pragma omp parallel for
+        for (int i = 0; i < imagesToProcess; i++)
+        {
+            fs::path imagePath = imageFiles[i];
+            string imageName = imagePath.filename().string();
+
+            cv::Mat original =
+                cv::imread(imagePath.string(), cv::IMREAD_COLOR);
+
+            if (original.empty())
+            {
+                continue;
+            }
+
+            long long originalSize = fs::file_size(imagePath);
+
+            vector<unsigned char> compressedData;
+
+            auto compressionStart =
+                chrono::high_resolution_clock::now();
+
+            bool compressionSuccess =
+                compressJPEG(
+                    original,
+                    compressedData,
+                    JPEG_QUALITY
+                );
+
+            auto compressionEnd =
+                chrono::high_resolution_clock::now();
+
+            if (!compressionSuccess)
+            {
+                continue;
+            }
+
+            double compressionTime =
+                chrono::duration<double, milli>(
+                    compressionEnd - compressionStart
+                ).count();
+
+            // Every image has its own filename.
+            fs::path compressedFilePath =
+                compressedClassPath / imageName;
+
+            ofstream compressedFile(
+                compressedFilePath,
+                ios::binary
+            );
+
+            if (!compressedFile.is_open())
+            {
+                continue;
+            }
+
+            compressedFile.write(
+                reinterpret_cast<const char*>(
+                    compressedData.data()
+                ),
+                compressedData.size()
+            );
+
+            compressedFile.close();
+
+            long long compressedSize =
+                static_cast<long long>(compressedData.size());
+
+            cv::Mat reconstructed;
+
+            auto decompressionStart =
+                chrono::high_resolution_clock::now();
+
+            bool decompressionSuccess =
+                decompressJPEG(
+                    compressedData,
+                    reconstructed
+                );
+
+            auto decompressionEnd =
+                chrono::high_resolution_clock::now();
+
+            if (!decompressionSuccess)
+            {
+                continue;
+            }
+
+            double decompressionTime =
+                chrono::duration<double, milli>(
+                    decompressionEnd - decompressionStart
+                ).count();
+
+            double totalTime =
+                compressionTime + decompressionTime;
+
+            fs::path reconstructedFilePath =
+                reconstructedClassPath / imageName;
+
+            if (!cv::imwrite(
+                    reconstructedFilePath.string(),
+                    reconstructed))
+            {
+                continue;
+            }
+
+            double mse =
+                calculateMSE(original, reconstructed);
+
+            double psnr =
+                calculatePSNR(mse);
+
+            double ssim =
+                calculateSSIM(original, reconstructed);
+
+            double compressionRatio =
+                static_cast<double>(originalSize) /
+                static_cast<double>(compressedSize);
+
+            double spaceSaving =
+                (
+                    static_cast<double>(
+                        originalSize - compressedSize
+                    ) /
+                    static_cast<double>(originalSize)
+                ) * 100.0;
+
+            ImageResult result;
+
+            result.className = className;
+            result.imageName = imageName;
+            result.originalSize = originalSize;
+            result.compressedSize = compressedSize;
+            result.compressionRatio = compressionRatio;
+            result.spaceSaving = spaceSaving;
+            result.compressionTime = compressionTime;
+            result.decompressionTime = decompressionTime;
+            result.totalTime = totalTime;
+            result.mse = mse;
+            result.psnr = psnr;
+            result.ssim = ssim;
+
+            // Each thread writes only to results[i].
+            results[i] = result;
+            success[i] = 1;
+        }
+
+        auto classEnd = chrono::high_resolution_clock::now();
+
+        double classWallTime =
+            chrono::duration<double, milli>(
+                classEnd - classStart
+            ).count();
+
+        cout << "Class: " << className
+             << " | Wall time: "
+             << fixed << setprecision(3)
+             << classWallTime << " ms\n";
+
+        // ========================================================
+        // SERIAL SECTION: CSV + TOTALS
+        // ========================================================
+        // No shared file or accumulator is accessed by OpenMP
+        // threads. Results are written only after the parallel loop.
+        for (int i = 0; i < imagesToProcess; i++)
+        {
+            if (!success[i])
+                continue;
+
+            const ImageResult& result = results[i];
+
+            csv << fixed << setprecision(6);
+            writeImageResult(csv, result);
+
+            totalOriginalSize += result.originalSize;
+            totalCompressedSize += result.compressedSize;
+
+            totalCompressionTime += result.compressionTime;
+            totalDecompressionTime += result.decompressionTime;
+            totalProcessingTime += result.totalTime;
+
+            totalMSE += result.mse;
+            totalPSNR += result.psnr;
+            totalSSIM += result.ssim;
+
+            successfulImages++;
+        }
+    }
+
+    auto experimentEnd = chrono::high_resolution_clock::now();
+
+    double wallTime =
+        chrono::duration<double, milli>(
+            experimentEnd - experimentStart
+        ).count();
+
+    if (successfulImages > 0)
+    {
+        double overallCompressionRatio =
+            static_cast<double>(totalOriginalSize) /
+            static_cast<double>(totalCompressedSize);
+
+        double overallSpaceSaving =
+            (
+                static_cast<double>(
+                    totalOriginalSize - totalCompressedSize
+                ) /
+                static_cast<double>(totalOriginalSize)
+            ) * 100.0;
+
+        double averageMSE =
+            totalMSE / successfulImages;
+
+        double averagePSNR =
+            totalPSNR / successfulImages;
+
+        double averageSSIM =
+            totalSSIM / successfulImages;
+
+        // Same overall row format as Person 1.
+        csv << "\n";
+        csv << "OVERALL,"
+            << successfulImages << ","
+            << totalOriginalSize << ","
+            << totalCompressedSize << ","
+            << overallCompressionRatio << ","
+            << overallSpaceSaving << ","
+            << totalCompressionTime << ","
+            << totalDecompressionTime << ","
+            << totalProcessingTime << ","
+            << averageMSE << ","
+            << averagePSNR << ","
+            << averageSSIM
+            << "\n";
+
+        // Store one clean benchmark row for Person 3.
+        fs::path benchmarkPath =
+            resultsPath / "parallel_benchmark.csv";
+
+        bool benchmarkExists = fs::exists(benchmarkPath);
+
+        ofstream benchmark(
+            benchmarkPath,
+            ios::app
+        );
+
+        if (benchmark.is_open())
+        {
+            if (!benchmarkExists)
+            {
+                benchmark
+                    << "ImagesPerClass,Threads,JPEG_Quality,"
+                    << "SuccessfulImages,WallTime_ms,"
+                    << "TotalPerImageTime_ms,CompressionRatio,"
+                    << "AverageMSE,AveragePSNR_dB,AverageSSIM\n";
+            }
+
+            benchmark << fixed << setprecision(6)
+                      << imagesPerClass << ","
+                      << numThreads << ","
+                      << JPEG_QUALITY << ","
+                      << successfulImages << ","
+                      << wallTime << ","
+                      << totalProcessingTime << ","
+                      << overallCompressionRatio << ","
+                      << averageMSE << ","
+                      << averagePSNR << ","
+                      << averageSSIM << "\n";
+
+            benchmark.close();
+        }
+
+        cout << "\n============================================\n";
+        cout << " Parallel Experiment Results\n";
+        cout << "============================================\n";
+        cout << "Threads               : " << numThreads << "\n";
+        cout << "Images processed      : " << successfulImages << "\n";
+        cout << "JPEG quality          : " << JPEG_QUALITY << "\n";
+        cout << "Compression ratio     : "
+             << overallCompressionRatio << "\n";
+        cout << "Average PSNR          : "
+             << averagePSNR << " dB\n";
+        cout << "Average SSIM          : "
+             << averageSSIM << "\n";
+        cout << "Total per-image time  : "
+             << totalProcessingTime << " ms\n";
+        cout << "Wall-clock time       : "
+             << wallTime << " ms\n";
+        cout << "Results saved to      : "
+             << csvPath << "\n";
+        cout << "============================================\n";
+    }
+
+    csv.close();
+
+    return 0;
+}
