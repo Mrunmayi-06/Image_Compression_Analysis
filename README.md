@@ -1,107 +1,102 @@
 # Image Compression Analysis using Sequential and Parallel Computing
 
-A C++-based image compression project that studies the computational cost of JPEG compression and reconstruction on increasing image collections, with a focus on **sequential versus OpenMP parallel execution**.
+A C++-based benchmarking project for studying the computational cost of JPEG compression and reconstruction on increasingly large image collections, with a focus on comparing a sequential implementation against an OpenMP-parallel implementation.
+
+This repository evaluates how image processing cost, reconstruction quality, and scalability change as the dataset size increases. The goal is not only to compress images, but to measure the trade-off between image quality, storage reduction, and execution time under different workloads.
 
 ---
 
 ## Overview
 
-Image compression is widely used to reduce storage requirements and data-transfer costs. However, processing a large collection of images can require significant computational time when every image is processed sequentially.
+Image compression is widely used to reduce storage requirements and improve data transfer efficiency. In large image collections, processing each image sequentially can become computationally expensive. This project investigates that problem by compressing and reconstructing a dataset of natural images and comparing performance between:
 
-This project implements an image compression and reconstruction pipeline and evaluates how its performance changes as the number of images increases.
+1. A sequential implementation that processes images one after another.
+2. A parallel implementation using OpenMP that processes independent images concurrently.
 
-The project has two main implementations:
+The same dataset, selection strategy, JPEG quality setting, and evaluation metrics are used across both implementations so the comparison remains fair and reproducible.
 
-1. **Sequential implementation** — processes images one after another.
-2. **Parallel implementation using OpenMP** — distributes independent image-processing tasks across multiple CPU threads.
+### Primary objectives
 
-The implementations are evaluated using the same dataset, compression settings, image-selection strategy, and quality metrics so that their performance can be compared fairly.
-
-### Main goals
-
-* Compress a large collection of images using JPEG.
-* Reconstruct/decompress the compressed images.
-* Measure compression and reconstruction quality.
-* Measure execution time for different dataset sizes.
-* Parallelize the workload using OpenMP.
-* Compare sequential and parallel execution.
-* Measure speedup and parallel efficiency.
-* Study scalability as the dataset size increases.
-* Identify computational bottlenecks and limitations.
+- Compress a large collection of JPEG images using TurboJPEG.
+- Decompress the compressed images and reconstruct the original content.
+- Measure compression quality using MSE, PSNR, and SSIM.
+- Measure storage savings and compression ratio.
+- Measure processing time for compression and decompression.
+- Compare sequential and parallel performance using execution time, speedup, and efficiency.
+- Evaluate how performance scales as the number of images increases.
+- Identify bottlenecks and practical limitations of parallel image processing.
 
 ---
 
-# Problem Statement
+## Problem Statement
 
-Develop and evaluate a computational approach for compressing large collections of images while maintaining acceptable reconstruction quality. Investigate the computational requirements for increasing image collections and determine how parallel processing can affect execution time and scalability.
+Image collections can be large, and compressing each image individually imposes a significant computational cost. This project evaluates how JPEG re-compression behaves when applied across many images and determines whether OpenMP parallelization improves execution time without sacrificing output quality.
+
+The study analyzes the relationship between:
+
+- dataset size,
+- compression quality,
+- file size reduction,
+- reconstruction quality,
+- runtime performance.
 
 ---
 
-# Approach
+## Research Methodology
 
-The project follows the pipeline:
+The project follows a consistent processing pipeline:
 
 ```text
-                    IMAGE DATASET
-                         |
-                         v
-                  Image Selection
-                         |
-                         v
-                  Read Input Image
-                         |
-                         v
-                  JPEG Compression
-                         |
-                         v
-                  Compressed Image
-                         |
-                         v
-                 JPEG Decompression
-                         |
-                         v
-                Reconstructed Image
-                         |
-                         v
-              Quality + Size Metrics
-                         |
-                         v
-                 Performance Results
+Dataset
+  ↓
+Select image subset
+  ↓
+Read image
+  ↓
+JPEG compression
+  ↓
+Save compressed JPEG bytes
+  ↓
+JPEG decompression
+  ↓
+Reconstruct image
+  ↓
+Compute quality metrics
+  ↓
+Compute storage metrics
+  ↓
+Record time measurements
+  ↓
+Write results to CSV
 ```
 
-The sequential implementation performs the image operations one after another.
-
-The OpenMP implementation parallelizes independent image-processing operations.
+### Sequential pipeline
 
 ```text
-Sequential
-
-Image 1 ──> Compress ──> Decompress
-Image 2 ──> Compress ──> Decompress
-Image 3 ──> Compress ──> Decompress
+Image 1 → Compress → Decompress
+Image 2 → Compress → Decompress
+Image 3 → Compress → Decompress
 ...
-Image N ──> Compress ──> Decompress
+Image N → Compress → Decompress
 ```
+
+### Parallel pipeline
 
 ```text
-OpenMP
-
-             ┌──> Image 1 ──> Compress ──> Decompress
-             ├──> Image 2 ──> Compress ──> Decompress
-CPU Threads ─┼──> Image 3 ──> Compress ──> Decompress
-             ├──> Image 4 ──> Compress ──> Decompress
-             └──> ...
+Threads → Image 1 → Compress → Decompress
+        → Image 2 → Compress → Decompress
+        → Image 3 → Compress → Decompress
+        → Image 4 → Compress → Decompress
+        → ...
 ```
 
-Because individual images can be processed independently, image-level parallelism is used as the primary parallelization strategy.
+Because each image is processed independently, image-level parallelism is the natural OpenMP strategy.
 
 ---
 
-# Dataset
+## Dataset
 
-The project uses the **Natural Images** dataset.
-
-The dataset contains eight image categories:
+The project uses the Natural Images dataset, which contains images organized into eight classes:
 
 ```text
 airplane
@@ -114,15 +109,13 @@ motorbike
 person
 ```
 
-Each category contains 500 images.
-
-Therefore:
+Each folder contains 500 JPEG images, giving a total of:
 
 ```text
 8 classes × 500 images = 4000 images
 ```
 
-Example filenames:
+Example filenames are:
 
 ```text
 airplane_0000.jpg
@@ -131,19 +124,9 @@ airplane_0002.jpg
 ...
 ```
 
-The original dataset is kept unchanged.
+### Deterministic image selection
 
-## Dataset Selection
-
-The project does not create separate physical datasets for every experiment.
-
-Instead, the program:
-
-1. Reads the images from each class directory.
-2. Sorts the filenames alphabetically.
-3. Selects the first `N` images required for the experiment.
-
-This produces nested and reproducible experiments.
+The dataset is not split into separate physical copies for each experiment. Instead, the programs select the first `N` sorted images from each class. This creates nested, repeatable, and fair comparisons.
 
 For example:
 
@@ -157,189 +140,151 @@ For example:
 500 images/class
 ```
 
-The same selection rule will be used by the sequential and parallel implementations.
+The same ordering and selection rule is used in both the sequential and parallel implementations.
 
 ---
 
-# Experiments
+## Experiments
 
-The main experiments are:
+The main experiments are based on the number of images processed per class.
 
-| Experiment | Images / Class | Number of Classes | Total Images |
-| ---------- | -------------: | ----------------: | -----------: |
-| E1         |             50 |                 8 |          400 |
-| E2         |            100 |                 8 |          800 |
-| E3         |            250 |                 8 |         2000 |
-| E4         |            500 |                 8 |         4000 |
+| Experiment | Images/Class | Classes | Total Images |
+|------------|-------------:|--------:|-------------:|
+| E1         | 50           | 8       | 400          |
+| E2         | 100          | 8       | 800          |
+| E3         | 250          | 8       | 2000         |
+| E4         | 500          | 8       | 4000         |
 
-The primary JPEG quality setting is:
+The JPEG quality is kept fixed throughout the main scalability experiment:
 
 ```text
 JPEG Quality = 75
 ```
 
-The main scalability experiment keeps the JPEG quality fixed while increasing the number of images.
-
-Additional quality experiments may be added later by the team.
+The project also supports a small correctness test with exactly 2 total images.
 
 ---
 
-# Correctness Test
+## Correctness Test
 
-Before running the large experiments, the sequential program supports a small correctness test.
+A small validation run is available to confirm the pipeline behaves correctly before larger experiments are launched.
 
 ```bash
 ./sequential.exe 2
 ```
 
-This processes exactly two images.
+This test processes exactly two images and verifies that:
 
-The test verifies that:
+- image files can be discovered and read correctly,
+- JPEG compression succeeds,
+- JPEG decompression succeeds,
+- reconstructed images are written to disk,
+- MSE is computed,
+- PSNR is computed,
+- SSIM is computed,
+- CSV output is written successfully.
 
-* Images can be located correctly.
-* Images can be read successfully.
-* JPEG compression works.
-* Compressed data can be decompressed.
-* Reconstructed images can be generated.
-* MSE can be calculated.
-* PSNR can be calculated.
-* SSIM can be calculated.
-* Output files are generated.
-* CSV results are written successfully.
-
-A successful correctness test should be performed before starting the full experiments.
+This should be run before starting large-scale benchmarking.
 
 ---
 
-# Compression
+## Compression Method
 
-The current implementation uses JPEG compression with:
+The project uses JPEG compression via TurboJPEG / libjpeg-turbo.
 
-```text
-Quality = 75
-```
-
-TurboJPEG/libjpeg-turbo is used for the JPEG encoding and decoding operations.
-
-The current compression pipeline is:
+The operating pipeline is:
 
 ```text
-Original JPEG
-     |
-     v
-Decode / Load Image
-     |
-     v
-JPEG Re-encoding
-     |
-     v
-Compressed JPEG Data
-     |
-     v
-JPEG Decoding
-     |
-     v
-Reconstructed Image
+Original JPEG image
+        ↓
+Load with OpenCV
+        ↓
+Convert BGR → RGB
+        ↓
+TurboJPEG encode
+        ↓
+Compressed JPEG bytes
+        ↓
+TurboJPEG decode
+        ↓
+Reconstructed image
 ```
 
-## Important Dataset Note
+### Important note
 
-The Natural Images dataset contains JPEG images.
-
-Therefore, this project performs **JPEG re-compression/re-encoding of JPEG input images**.
-
-It is not a comparison between an uncompressed raw image and its first JPEG encoding.
-
-This distinction should be considered when interpreting the compression results.
+The dataset already contains JPEG images. Therefore, this project is studying JPEG re-compression of JPEG inputs rather than comparing an uncompressed image to its first JPEG encoding. This is important when interpreting compression ratio and quality results.
 
 ---
 
-# Evaluation Metrics
+## Evaluation Metrics
 
-The project evaluates both storage reduction and reconstructed image quality.
+The software records both storage-related metrics and image-quality metrics.
 
-## Compression Ratio
-
-```text
-Compression Ratio =
-Original Size / Compressed Size
-```
-
-## Space Saving
+### 1. Compression ratio
 
 ```text
-Space Saving (%) =
-((Original Size - Compressed Size) / Original Size) × 100
+Compression Ratio = Original Size / Compressed Size
 ```
 
-## Mean Squared Error — MSE
+A higher value indicates more aggressive reduction relative to the original file size.
 
-MSE measures the average squared difference between the original and reconstructed images.
+### 2. Space saving
 
-Lower MSE indicates lower pixel-level reconstruction error.
+```text
+Space Saving (%) = ((Original Size - Compressed Size) / Original Size) × 100
+```
 
-## Peak Signal-to-Noise Ratio — PSNR
+This measures the percentage of storage saved after compression.
 
-PSNR measures reconstruction quality based on pixel error.
+### 3. Mean Squared Error (MSE)
 
-Higher PSNR generally indicates lower reconstruction error.
+```text
+MSE = (1 / N) × Σ (original - reconstructed)^2
+```
 
-## Structural Similarity Index — SSIM
+MSE computes the average squared pixel difference between the original and reconstructed image. Lower MSE indicates better reconstruction fidelity.
 
-SSIM measures structural similarity between the original and reconstructed images.
+### 4. Peak Signal-to-Noise Ratio (PSNR)
 
-The current sequential implementation uses a custom global grayscale SSIM calculation.
+```text
+PSNR = 10 × log10((MAX^2) / MSE)
+```
 
-The exact SSIM implementation should remain consistent between sequential and parallel versions.
+where `MAX = 255` for 8-bit images. Higher PSNR generally indicates lower reconstruction error.
+
+### 5. Structural Similarity Index (SSIM)
+
+SSIM compares local structure, luminance, and contrast between the original and reconstructed images. It is often more descriptive than MSE or PSNR for visual image quality.
+
+In this project, SSIM is calculated using a global grayscale formulation that is kept consistent between the sequential and parallel implementations.
 
 ---
 
-# Performance Metrics
+## Performance Metrics
 
-The following timing measurements are collected:
+The project records timings for:
 
-* Compression time
-* Decompression time
-* Total processing time
+- compression time,
+- decompression time,
+- total processing time.
 
-The current timing scope measures the TurboJPEG compression and decompression operations.
-
-File scanning, output writing and other setup operations should be kept consistent when comparing sequential and parallel implementations.
-
----
-
-# Parallel Performance
-
-The parallel implementation uses OpenMP.
-
-The main performance measurements will include:
-
-### Execution Time
-
-```text
-Sequential execution time
-Parallel execution time
-```
+The timing is measured around the TurboJPEG encode/decode operations, with the same measurement strategy used in the sequential and parallel versions.
 
 ### Speedup
 
 ```text
-Speedup =
-Sequential Time / Parallel Time
+Speedup = Sequential Time / Parallel Time
 ```
 
-### Parallel Efficiency
+### Parallel efficiency
 
 ```text
-Parallel Efficiency (%) =
-Speedup / Number of Threads × 100
+Parallel Efficiency (%) = (Speedup / Number of Threads) × 100
 ```
 
-### Thread Scaling
+### Thread scaling
 
-The parallel implementation will be tested with multiple thread counts, depending on the available CPU hardware.
-
-Example:
+The OpenMP version is tested using multiple thread counts such as:
 
 ```text
 1 thread
@@ -348,17 +293,16 @@ Example:
 8 threads
 ```
 
-The actual thread counts used will be recorded in the final experiment results.
+The actual thread count used for a given run is recorded in the CSV output and benchmark file.
 
 ---
 
-# Project Structure
-
-The project is organized so that individual team members can add their components without changing the existing dataset.
+## Repository Structure
 
 ```text
-ImageCompressionProject/
-│
+Image_Compression_Analysis-main/
+├── README.md
+├── verify.py
 ├── natural_images/
 │   ├── airplane/
 │   ├── car/
@@ -368,12 +312,9 @@ ImageCompressionProject/
 │   ├── fruit/
 │   ├── motorbike/
 │   └── person/
-│
 ├── src/
 │   ├── sequential.cpp
-│   ├── sequential.exe
 │   └── parallel.cpp
-│
 ├── output/
 │   ├── compressed/
 │   │   ├── 2/
@@ -381,72 +322,67 @@ ImageCompressionProject/
 │   │   ├── 100/
 │   │   ├── 250/
 │   │   └── 500/
-│   │
-│   └── reconstructed/
-│       ├── 2/
+│   ├── reconstructed/
+│   │   ├── 2/
+│   │   ├── 50/
+│   │   ├── 100/
+│   │   ├── 250/
+│   │   └── 500/
+│   ├── parallel_compressed/
+│   │   ├── 50/
+│   │   ├── 100/
+│   │   ├── 250/
+│   │   └── 500/
+│   └── parallel_reconstructed/
 │       ├── 50/
 │       ├── 100/
 │       ├── 250/
 │       └── 500/
-│
 ├── results/
 │   ├── sequential_2_per_class.csv
 │   ├── sequential_50_per_class.csv
 │   ├── sequential_100_per_class.csv
 │   ├── sequential_250_per_class.csv
-│   └── sequential_500_per_class.csv
-│
-├── README.md
-└── ...
-```
-
-As the project progresses, additional files can be added for:
-
-```text
-parallel implementation
-performance analysis
-graphs
-experiment scripts
-documentation
-LLM usage log
+│   ├── sequential_500_per_class.csv
+│   ├── parallel_50_t1_per_class.csv
+│   ├── parallel_50_t2_per_class.csv
+│   ├── parallel_50_t4_per_class.csv
+│   ├── parallel_50_t8_per_class.csv
+│   └── parallel_benchmark.csv
+└── test/
+    └── test.cpp
 ```
 
 ---
 
-# Requirements
+## Requirements
 
-## Hardware
+### Hardware
 
-The project is CPU-based.
+- Multi-core CPU recommended
+- At least 8 GB RAM recommended
+- Sufficient disk space for the dataset and generated outputs
 
-Recommended:
+### Software
 
-* Multi-core CPU
-* At least 8 GB RAM
-* Sufficient disk space for the dataset and generated outputs
+The project is developed under:
 
-The exact CPU model and RAM used for the final experiments should be recorded in the experimental setup.
-
-## Software
-
-Current development environment:
-
-* Windows
-* MSYS2 UCRT64
-* GCC/G++ 16.2.0
-* C++17
-* OpenCV 5.0.0
-* libjpeg-turbo / TurboJPEG
-* OpenMP
-* Visual Studio Code
+- Windows
+- MSYS2 UCRT64 shell
+- GCC / G++
+- C++17
+- OpenCV
+- TurboJPEG / libjpeg-turbo
+- OpenMP
+- Visual Studio Code
 
 ---
 
-# Dependencies
+## Dependencies
 
-The project currently uses:
+### C++ standard library
 
-### C++ Standard Library
+The code relies on:
 
 ```cpp
 <iostream>
@@ -464,29 +400,31 @@ The project currently uses:
 
 Used for:
 
-* Image representation
-* Image conversion
-* Image processing
-* Matrix operations
+- image loading,
+- color-space conversion,
+- matrix operations,
+- image writing,
+- basic image processing utilities.
 
 ### TurboJPEG / libjpeg-turbo
 
 Used for:
 
-* JPEG compression
-* JPEG decompression
+- JPEG compression,
+- JPEG decompression,
+- efficient compressed byte generation.
 
 ### OpenMP
 
-Used by the parallel implementation for shared-memory CPU parallelism.
+Used by the parallel implementation for shared-memory parallelism across CPU threads.
 
 ---
 
-# Installing the Dependencies
+## Setup and Installation
 
-The following commands are for an MSYS2 UCRT64 environment.
+The following instructions are tailored for an MSYS2 UCRT64 environment on Windows.
 
-## GCC
+### 1. Install GCC
 
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-gcc
@@ -498,23 +436,21 @@ Verify:
 g++ --version
 ```
 
-## OpenCV
+### 2. Install OpenCV
 
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-opencv
 ```
 
-## libjpeg-turbo / TurboJPEG
+### 3. Install TurboJPEG
 
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-libjpeg-turbo
 ```
 
-## OpenMP
+### 4. Confirm compiler support
 
-OpenMP support is provided through GCC.
-
-The compiler should be invoked with:
+OpenMP support is available through GCC. The compiler is invoked with:
 
 ```text
 -fopenmp
@@ -522,385 +458,204 @@ The compiler should be invoked with:
 
 ---
 
-# Building the Sequential Implementation
+## Building the Project
 
-Open the MSYS2 UCRT64 terminal and move to the `src` directory.
-
-```bash
-cd /c/Users/<username>/OneDrive/Desktop/daat1/src
-```
-
-Compile:
+From the repository root, compile both implementations:
 
 ```bash
-g++ sequential.cpp -o sequential.exe -std=c++17 \
--I/ucrt64/include/opencv5 \
--L/ucrt64/lib \
--lopencv_core \
--lopencv_imgcodecs \
--lopencv_imgproc \
--lopencv_quality \
--lturbojpeg \
--ljpeg \
--fopenmp
+g++ -std=c++17 -O3 -fopenmp src/sequential.cpp -o sequential.exe $(pkg-config --cflags --libs opencv4) -lturbojpeg
+g++ -std=c++17 -O3 -fopenmp src/parallel.cpp -o parallel.exe $(pkg-config --cflags --libs opencv4) -lturbojpeg
 ```
 
-Run the correctness test:
-
-```bash
-./sequential.exe 2
-```
+If `pkg-config` is not available in your setup, you can also compile using explicit include and library paths as needed for your environment.
 
 ---
 
-# Running Experiments
+## Running the Experiments
 
-## Correctness Test
+### Sequential version
 
-```bash
-./sequential.exe 2
-```
-
-Processes exactly two images.
-
----
-
-## Experiment E1
-
-```bash
-./sequential.exe 50
-```
-
-Processes:
-
-```text
-50 × 8 = 400 images
-```
-
----
-
-## Experiment E2
-
-```bash
-./sequential.exe 100
-```
-
-Processes:
-
-```text
-100 × 8 = 800 images
-```
-
----
-
-## Experiment E3
-
-```bash
-./sequential.exe 250
-```
-
-Processes:
-
-```text
-250 × 8 = 2000 images
-```
-
----
-
-## Experiment E4
-
-```bash
-./sequential.exe 500
-```
-
-Processes:
-
-```text
-500 × 8 = 4000 images
-```
-
----
-
-## Run All Sequential Experiments
-
-Running the executable without an argument runs the complete experiment set:
+Run all standard experiments:
 
 ```bash
 ./sequential.exe
 ```
 
-This runs:
+Run only the correctness test:
+
+```bash
+./sequential.exe 2
+```
+
+Run a single experiment size:
+
+```bash
+./sequential.exe 50
+./sequential.exe 100
+./sequential.exe 250
+./sequential.exe 500
+```
+
+### Parallel version
+
+Usage:
+
+```bash
+./parallel.exe <images_per_class> <threads>
+```
+
+Examples:
+
+```bash
+./parallel.exe 50 1
+./parallel.exe 50 2
+./parallel.exe 50 4
+./parallel.exe 50 8
+```
+
+Accepted image counts:
 
 ```text
-E1 → 50 images/class
-E2 → 100 images/class
-E3 → 250 images/class
-E4 → 500 images/class
+2, 50, 100, 250, 500
+```
+
+Accepted thread counts:
+
+```text
+1, 2, 4, 8
 ```
 
 ---
 
-# Output
+## Output Files
 
-The program creates compressed and reconstructed images under:
+### Sequential output
+
+The sequential implementation stores output in:
 
 ```text
-output/compressed/
-output/reconstructed/
+output/reconstructed/<images_per_class>/<class_name>/
 ```
 
-For example:
+and writes per-image CSV metrics to:
 
 ```text
-output/
-├── compressed/
-│   └── 50/
-│       ├── airplane/
-│       ├── car/
-│       ├── cat/
-│       └── ...
-│
-└── reconstructed/
-    └── 50/
-        ├── airplane/
-        ├── car/
-        ├── cat/
-        └── ...
-```
-
-The program also creates CSV files under:
-
-```text
-results/
+results/sequential_<images_per_class>_per_class.csv
 ```
 
 Example:
 
 ```text
-sequential_50_per_class.csv
+results/sequential_50_per_class.csv
 ```
 
----
+### Parallel output
 
-# CSV Results
-
-The current sequential implementation records:
+The parallel version stores reconstructed images in:
 
 ```text
-Class
-Image
-Original_Size_Bytes
-Compressed_Size_Bytes
-Compression_Ratio
-Space_Saving_Percent
-Compression_Time_ms
-Decompression_Time_ms
-Total_Time_ms
-MSE
-PSNR_dB
-SSIM
+output/parallel_reconstructed/<images_per_class>/t<threads>/<class_name>/
 ```
 
-The CSV contains both per-image measurements and aggregate experiment results.
-
-The CSV files will be used later to generate:
-
-* Performance tables
-* Execution-time graphs
-* Compression-ratio graphs
-* Quality graphs
-* Dataset-size scaling graphs
-* Sequential-versus-parallel comparisons
-
----
-
-# Experimental Methodology
-
-For a fair comparison, sequential and parallel implementations should use:
-
-* The same dataset
-* The same selected images
-* The same JPEG quality
-* The same compression algorithm
-* The same reconstruction process
-* The same quality metrics
-* The same machine
-* The same input/output conditions
-* Consistent timing methodology
-
-Each major experiment should ideally be repeated multiple times.
-
-The final report should record the average or otherwise clearly defined representative execution time.
-
----
-
-# Correctness Verification
-
-Correctness will be checked at multiple levels.
-
-### Functional correctness
-
-Verify that:
-
-* Every selected input image is processed.
-* Every image produces a compressed output.
-* Every compressed image can be reconstructed.
-* CSV entries are generated correctly.
-
-### Quality correctness
-
-Verify that:
-
-* MSE is finite and non-negative.
-* PSNR is calculated correctly.
-* SSIM remains within its expected range.
-* Original and reconstructed images have compatible dimensions for comparison.
-
-### Sequential vs Parallel correctness
-
-The parallel implementation should process the same inputs and produce equivalent compression and reconstruction results under the same settings.
-
-Small differences caused by implementation/library behavior should be investigated and documented rather than ignored.
-
----
-
-# Performance Analysis Plan
-
-The final analysis will investigate three major dimensions.
-
-## 1. Dataset Size Scaling
-
-Compare:
+and writes CSV results to:
 
 ```text
-400 images
-800 images
-2000 images
-4000 images
+results/parallel_<images_per_class>_t<threads>_per_class.csv
 ```
-
-Measure how execution time changes as the workload increases.
-
-## 2. Thread Scaling
-
-For a fixed dataset size, compare multiple OpenMP thread counts.
 
 Example:
 
 ```text
-1
-2
-4
-8
+results/parallel_100_t4_per_class.csv
 ```
 
-## 3. Compression Quality
+A benchmark summary is also appended to:
 
-If included in the final experiments, compare different JPEG quality levels while observing:
-
-* File size
-* Compression ratio
-* Space saving
-* MSE
-* PSNR
-* SSIM
-* Execution time
-
-The primary scalability experiment uses JPEG quality 75.
+```text
+results/parallel_benchmark.csv
+```
 
 ---
 
-# Bottleneck Analysis
+## Correctness Verification
 
-The final project will investigate where execution time is spent.
+A Python verification script is included to compare sequential and parallel outputs for the same experiment.
 
-Potential areas include:
+Usage:
 
-* JPEG encoding
-* JPEG decoding
-* Image loading
-* Memory allocation
-* Memory bandwidth
-* Disk I/O
-* Thread scheduling
-* Synchronization
-* Output file writing
+```bash
+python verify.py 50 4
+```
 
-The actual bottlenecks will be identified from measured results rather than assumed beforehand.
+This validates:
 
----
+- same image set,
+- same metric values,
+- same reconstructed image pixels,
+- same dataset and result counts.
 
-# Current Status
-
-## Sequential Implementation
-
-### Completed
-
-* Dataset organization
-* Dataset selection strategy
-* C++ environment setup
-* OpenCV installation
-* TurboJPEG installation
-* JPEG compression
-* JPEG decompression
-* Reconstruction
-* Compression ratio calculation
-* Space saving calculation
-* MSE calculation
-* PSNR calculation
-* SSIM calculation
-* Execution-time measurement
-* CSV generation
-* Correctness test
-* Experiment modes for 50, 100, 250 and 500 images/class
-
-### Verified
-
-The small correctness test has successfully processed two images and generated:
-
-* Compressed output
-* Reconstructed output
-* Compression statistics
-* Quality metrics
-* CSV results
+The script compares the CSV data and reconstructed images in `output` and reports whether the parallel result matches the sequential one.
 
 ---
 
-# Parallel Implementation
+## Performance Interpretation
 
-The parallel implementation is planned using OpenMP.
+The project compares execution time and output quality under consistent conditions. A lower time is better, but it must also be considered alongside:
 
-It will:
+- image quality metrics,
+- compression ratio,
+- output fidelity,
+- dataset size,
+- hardware/thread count.
 
-1. Reuse the sequential processing logic where appropriate.
-2. Identify independent image-level operations.
-3. Parallelize those operations using OpenMP.
-4. Support configurable thread counts.
-5. Generate results using a format compatible with the sequential results.
-6. Verify correctness against the sequential implementation.
-7. Record parallel execution time.
-8. Calculate speedup and efficiency.
-
-This section should be updated by the team member responsible for the parallel implementation.
-
----
-# License
-
-This project is developed as an academic project.
-
-The Natural Images dataset is not included in this repository. Users should obtain the dataset separately and comply with its applicable terms of use.
+In practice, the expected outcome is that parallel execution reduces wall-clock time as the image count increases, while maintaining essentially identical quality metrics to the sequential version.
 
 ---
 
-# Acknowledgements
+## Notes and Assumptions
 
-This project uses open-source software libraries including:
+- The project uses JPEG input images; therefore, it measures JPEG re-compression, not raw-image-to-JPEG conversion.
+- The same deterministic sorting and selection strategy is used across all runs.
+- Output quality is computed after re-encoding and decoding, which reflects real pipeline behavior.
+- The benchmark includes image encode/decode time but not unrelated system-level overhead outside the measured algorithmic workflow.
 
-* OpenCV
-* libjpeg-turbo / TurboJPEG
-* OpenMP
-* GCC
+---
 
-The project team acknowledges the developers and maintainers of these tools and libraries.
+## Summary
+
+This repository provides a complete benchmark pipeline for comparing sequential and OpenMP-parallel JPEG image compression and reconstruction. It is designed to be reproducible, deterministic, and suitable for analyzing the performance of large image collections under consistent experimental conditions.
+
+The software records both numerical quality metrics and runtime performance, making it useful for evaluating the effectiveness of parallel processing on image workloads.
+
+---
+
+## Quick Start
+
+```bash
+# Build
+ g++ -std=c++17 -O3 -fopenmp src/sequential.cpp -o sequential.exe $(pkg-config --cflags --libs opencv4) -lturbojpeg
+ g++ -std=c++17 -O3 -fopenmp src/parallel.cpp -o parallel.exe $(pkg-config --cflags --libs opencv4) -lturbojpeg
+
+# Correctness test
+ ./sequential.exe 2
+
+# Sequential full experiment
+ ./sequential.exe 50
+
+# Parallel benchmark example
+ ./parallel.exe 50 4
+
+# Verify outputs
+ python verify.py 50 4
+```
+
+---
+
+## License
+
+This project is provided for academic and research use as part of a computational image processing and parallel computing study.
+
+---
+
 
 
